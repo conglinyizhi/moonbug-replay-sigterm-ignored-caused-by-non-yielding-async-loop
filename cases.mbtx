@@ -134,26 +134,37 @@ fn tail_lines(text : String, keep : Int) -> String {
 }
 
 ///|
-/// 非阻塞收尸：None = 还在跑；Some(code) = 已退出（被信号杀死记 128+n）。
+/// 非阻塞收尸的结果。
 ///
-/// 不能拿 kill(pid, 0) 判活：子进程死了但没被收尸时会变僵尸，僵尸也是「kill 成功」。
-fn reap(pid : Int) -> Int? {
+/// 用 waitpid 而不是 kill(pid, 0)：子进程被信号打死后、被收尸之前是僵尸，
+/// 僵尸也是「kill 成功」，会把「已经退出」误判成「TERM 无效」。
+enum Reap {
+  Running
+  Exited(Int)
+  Unknown
+}
+
+///|
+fn reap(pid : Int) -> Reap {
   let status : Ref[Int] = Ref::{ val: 0 }
-  if c_waitpid(pid, status, 1) == 0 {
-    None
+  let r = c_waitpid(pid, status, 1)
+  if r == 0 {
+    Running
+  } else if r < 0 {
+    // ECHILD / EINTR 之类：状态说不准，别当成「已经退出」
+    Unknown
   } else {
     let s = status.val
     let killed_by = s & 0x7f
-    if killed_by == 0 {
-      Some((s >> 8) & 0xff)
-    } else {
-      Some(128 + killed_by)
-    }
+    Exited(if killed_by == 0 { (s >> 8) & 0xff } else { 128 + killed_by })
   }
 }
 
 ///|
 async fn probe(c : Case) -> Result {
+  if !@fs.exists(c.exe) {
+    return { alive_before: false, verdict: "missing_exe", exit: -1, waited_ms: 0 }
+  }
   let log = "_build/logs/" + c.name + ".log"
   let pid = @process.spawn_orphan(
     c.exe,
@@ -163,39 +174,49 @@ async fn probe(c : Case) -> Result {
   )
   @async.sleep(ready_wait)
   match reap(pid) {
-    Some(code) =>
+    Exited(code) =>
       { alive_before: false, verdict: "exited_early", exit: code, waited_ms: 0 }
-    None => {
+    Unknown => { alive_before: false, verdict: "unknown", exit: -1, waited_ms: 0 }
+    Running => {
       ignore(c_kill(pid, sigterm))
       let mut waited = 0
       let mut after = reap(pid)
-      while after is None && waited < term_grace {
+      while after is Running && waited < term_grace {
         @async.sleep(100)
         waited = waited + 100
         after = reap(pid)
       }
       match after {
-        Some(code) => {
+        Exited(code) => {
           alive_before: true,
           verdict: "term_ok",
           exit: code,
           waited_ms: waited,
         }
-        None => {
+        Unknown => { alive_before: true, verdict: "unknown", exit: -1, waited_ms: waited }
+        Running => {
           // TERM 无效：只能 SIGKILL 收场，把这一步的结果记成退出码
           ignore(c_kill(pid, sigkill))
           let mut killed = reap(pid)
           let mut waited_kill = 0
-          while killed is None && waited_kill < 5000 {
+          while killed is Running && waited_kill < 5000 {
             @async.sleep(50)
             waited_kill = waited_kill + 50
             killed = reap(pid)
           }
-          {
-            alive_before: true,
-            verdict: "term_ignored",
-            exit: killed.unwrap_or(-1),
-            waited_ms: waited,
+          match killed {
+            Exited(code) => {
+              alive_before: true,
+              verdict: "term_ignored",
+              exit: code,
+              waited_ms: waited,
+            }
+            _ => {
+              alive_before: true,
+              verdict: "term_ignored_unkillable",
+              exit: -1,
+              waited_ms: waited,
+            }
           }
         }
       }
