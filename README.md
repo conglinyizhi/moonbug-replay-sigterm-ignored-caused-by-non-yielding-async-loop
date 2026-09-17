@@ -46,10 +46,11 @@ async fn main {
 
 ### 复现平台
 
-| 平台 | moon 版本 | 结果 |
+| 平台 | 工具链 | 结果 |
 | --- | --- | --- |
-| 本机 Linux x86-64 | 0.1.20260916（e4f45e4，2026-09-16，nightly） | 复现（`make bug` 绿） |
-| GitHub Actions `ubuntu-latest` | 0.1.20260915（2e1a46d，2026-09-15，`latest` 频道） | 复现（[run 35218987137](https://github.com/conglinyizhi/moonbug-replay-sigterm-ignored-caused-by-non-yielding-async-loop/actions/runs/35218987137)：三条 lane 全绿） |
+| 本机 Linux x86-64 | `moon 0.1.20260916 (e4f45e4)`，nightly 频道 | 复现（`make bug` 绿） |
+| GitHub Actions `ubuntu-latest` | `moon 0.1.20260915 (2e1a46d)`，latest 频道 | 复现（[run 35218987137](https://github.com/conglinyizhi/moonbug-replay-sigterm-ignored-caused-by-non-yielding-async-loop/actions/runs/35218987137)：三条 lane 全绿） |
+| GitHub Actions `ubuntu-latest` | `moon 0.1.20260916 (e4f45e4)`，nightly 频道（与本机同版本） | 复现（[run 35219983330](https://github.com/conglinyizhi/moonbug-replay-sigterm-ignored-caused-by-non-yielding-async-loop/actions/runs/35219983330)：三条 lane 全绿，`async_tight` 同样是 `term_ignored exit=137`） |
 
 ## 2. 快速复现
 
@@ -155,7 +156,12 @@ workaround / contrast 两条 lane 由 PASS 变 FAIL。探针的父进程就是 `
 
 `latest` 那轮（2026-09-17，[run 35218987137](https://github.com/conglinyizhi/moonbug-replay-sigterm-ignored-caused-by-non-yielding-async-loop/actions/runs/35218987137)）：
 三条 lane 全绿，`upstream-fix-status` 是 failure 但 workflow 结论仍是 success；
-runner 上装到 `moon 0.1.20260915 (2e1a46d 2026-09-15)`，本机是 09-16 的 nightly —— 两边结论一致。
+runner 上装到 `moon 0.1.20260915 (2e1a46d 2026-09-15)`，与本机不同版本，结论一致。
+
+`nightly` 那轮（[run 35219983330](https://github.com/conglinyizhi/moonbug-replay-sigterm-ignored-caused-by-non-yielding-async-loop/actions/runs/35219983330)）：
+在干净的 runner 上装到的就是本机那个 `moon 0.1.20260916 (e4f45e4 2026-09-16)`
+（`moonc v0.10.13+75bd53fc8-nightly`、`moonrun 0.1.20260916`），`async_tight` 同样是 `term_ignored`、SIGKILL 收场 `exit=137`，
+所以这个复现不是本机环境特有。
 （后续一次 push 顺手把 `checkout` 从 v4 升到 v5，消掉了日志里的 Node 20 弃用提示。）
 
 ### 注意
@@ -171,13 +177,14 @@ runner 上装到 `moon 0.1.20260915 (2e1a46d 2026-09-15)`，本机是 09-16 的 
 
 ```
 # 本机（本文所有数字的来源）
-moon 0.1.20260916 (e4f45e4 2026-09-16)      # nightly
+moon 0.1.20260916 (e4f45e4 2026-09-16)      # nightly 频道
 moonc v0.10.13+75bd53fc8-nightly (2026-09-15)
 moonbitlang/async 0.22.1
 Linux x86-64（内核 7.2.3-arch1-3），clang 22.1.8
 
-# CI（ubuntu-latest，run 35218987137）
-moon 0.1.20260915 (2e1a46d 2026-09-15)      # latest 频道
+# CI（ubuntu-latest）
+moon 0.1.20260915 (2e1a46d 2026-09-15)      # latest 频道（run 35218987137）
+moon 0.1.20260916 (e4f45e4 2026-09-16)      # nightly 频道（run 35219983330，与本机同版本）
 ```
 
 ### 相关上游 issue
