@@ -1,0 +1,58 @@
+name: async tight loop ignores SIGTERM
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  hit-the-bug:
+    name: 命中问题 lane
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装 MoonBit 工具链
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: 探针参数与循环形态
+        run: make diagnose
+      - name: 跑命中问题 lane
+        run: make bug
+
+  workaround:
+    name: 绕过 lane
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装 MoonBit 工具链
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: 跑绕过 lane
+        run: make workaround
+
+  contrast:
+    name: 对照 lane（问题特异性）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装 MoonBit 工具链
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: 跑对照 lane
+        run: make contrast
+
+  upstream-fix-status:
+    name: 上游是否已修（允许失败）
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装 MoonBit 工具链
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: 跑修复验收 lane
+        run: make fixed

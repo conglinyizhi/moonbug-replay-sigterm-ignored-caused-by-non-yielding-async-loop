@@ -1,0 +1,363 @@
+///|
+/// async 紧循环收不到 SIGTERM —— 可执行规格
+///
+///   moon run cases.mbtx                 跑 bug + workaround + contrast lane（= verify）
+///   moon run cases.mbtx -- bug          命中问题 lane
+///   moon run cases.mbtx -- workaround   绕过 lane
+///   moon run cases.mbtx -- contrast     对照 lane
+///   moon run cases.mbtx -- fixed        修复验收 lane（上游修好后转 PASS）
+///   moon run cases.mbtx -- list         列出用例
+///   moon run cases.mbtx -- diagnose     打印探针参数与三个程序的循环形态
+///
+/// 环境变量：MOON（moon 可执行文件，默认 $HOME/.moon/bin/moon）
+///           FIX_CC（编译 native 用的 C 编译器，默认 clang）
+import {
+  "moonbitlang/async@0.22.1",
+  "moonbitlang/async/process",
+  "moonbitlang/async/fs",
+  "moonbitlang/core/env",
+}
+
+///|
+extern "c" fn c_exit(code : Int) = "exit"
+
+///|
+extern "c" fn c_kill(pid : Int, sig : Int) -> Int = "kill"
+
+///|
+#borrow(status)
+extern "c" fn c_waitpid(pid : Int, status : Ref[Int], options : Int) -> Int = "waitpid"
+
+///|
+let sigterm : Int = 15
+
+///|
+let sigkill : Int = 9
+
+///|
+/// 启动后等多久发信号。async_tight 在 1000 ms 时进紧循环，这里留一倍余量。
+let ready_wait : Int = 2000
+
+///|
+/// 发完 SIGTERM 的宽限期，超过就判定「TERM 无效」。
+let term_grace : Int = 3000
+
+///|
+struct Case {
+  name : String
+  exe : String
+  lane : String
+  expect : String
+  desc : String
+}
+
+///|
+fn all_cases() -> Array[Case] {
+  [
+    {
+      name: "async_tight",
+      exe: "_build/native/debug/build/async_tight/async_tight.exe",
+      lane: "bug",
+      expect: "term_ignored",
+      desc: "async 紧循环（await 一次后不再 yield）—— 复现",
+    },
+    {
+      name: "async_loop",
+      exe: "_build/native/debug/build/async_loop/async_loop.exe",
+      lane: "workaround",
+      expect: "term_ok",
+      desc: "async 每轮回到事件循环 —— 绕过形态",
+    },
+    {
+      name: "loop",
+      exe: "_build/native/debug/build/loop/loop.exe",
+      lane: "contrast",
+      expect: "term_ok",
+      desc: "非 async 忙等循环 —— 对照",
+    },
+  ]
+}
+
+///|
+fn lane_cases(lane : String) -> Array[Case] {
+  all_cases().filter(c => c.lane == lane)
+}
+
+///|
+struct Result {
+  alive_before : Bool
+  verdict : String
+  exit : Int
+  waited_ms : Int
+}
+
+///|
+fn env_or(key : String, fallback : String) -> String {
+  match @env.get_env_var(key) {
+    Some(v) => v
+    None => fallback
+  }
+}
+
+///|
+fn moon_exe() -> String {
+  env_or("MOON", env_or("HOME", "/root") + "/.moon/bin/moon")
+}
+
+///|
+fn fix_cc() -> String {
+  env_or("FIX_CC", "clang")
+}
+
+///|
+fn pad(s : String, width : Int) -> String {
+  if s.length() >= width {
+    s
+  } else {
+    s + " ".repeat(width - s.length())
+  }
+}
+
+///|
+fn tail_lines(text : String, keep : Int) -> String {
+  let lines = text.split("\n").collect()
+  let start = if lines.length() > keep { lines.length() - keep } else { 0 }
+  let buf = StringBuilder()
+  let mut i = start
+  while i < lines.length() {
+    buf.write_string("    ")
+    buf.write_string(lines[i].to_owned())
+    buf.write_string("\n")
+    i = i + 1
+  }
+  buf.to_string()
+}
+
+///|
+/// 非阻塞收尸：None = 还在跑；Some(code) = 已退出（被信号杀死记 128+n）。
+///
+/// 不能拿 kill(pid, 0) 判活：子进程死了但没被收尸时会变僵尸，僵尸也是「kill 成功」。
+fn reap(pid : Int) -> Int? {
+  let status : Ref[Int] = Ref::{ val: 0 }
+  if c_waitpid(pid, status, 1) == 0 {
+    None
+  } else {
+    let s = status.val
+    let killed_by = s & 0x7f
+    if killed_by == 0 {
+      Some((s >> 8) & 0xff)
+    } else {
+      Some(128 + killed_by)
+    }
+  }
+}
+
+///|
+async fn probe(c : Case) -> Result {
+  let log = "_build/logs/" + c.name + ".log"
+  let pid = @process.spawn_orphan(
+    c.exe,
+    [],
+    stdout=@process.redirect_to_file(log, create_mode=@fs.CreateOrTruncate),
+    stderr=@process.redirect_to_file(log, create_mode=@fs.CreateOrTruncate),
+  )
+  @async.sleep(ready_wait)
+  match reap(pid) {
+    Some(code) =>
+      { alive_before: false, verdict: "exited_early", exit: code, waited_ms: 0 }
+    None => {
+      ignore(c_kill(pid, sigterm))
+      let mut waited = 0
+      let mut after = reap(pid)
+      while after is None && waited < term_grace {
+        @async.sleep(100)
+        waited = waited + 100
+        after = reap(pid)
+      }
+      match after {
+        Some(code) => {
+          alive_before: true,
+          verdict: "term_ok",
+          exit: code,
+          waited_ms: waited,
+        }
+        None => {
+          // TERM 无效：只能 SIGKILL 收场，把这一步的结果记成退出码
+          ignore(c_kill(pid, sigkill))
+          let mut killed = reap(pid)
+          let mut waited_kill = 0
+          while killed is None && waited_kill < 5000 {
+            @async.sleep(50)
+            waited_kill = waited_kill + 50
+            killed = reap(pid)
+          }
+          {
+            alive_before: true,
+            verdict: "term_ignored",
+            exit: killed.unwrap_or(-1),
+            waited_ms: waited,
+          }
+        }
+      }
+    }
+  }
+}
+
+///|
+async fn prepare() -> Bool {
+  let (code, _, err) = @process.collect_output(
+    moon_exe(),
+    ["build", "--target", "native", "loop", "async_loop", "async_tight"],
+    extra_env={ "MOON_CC": fix_cc() },
+  )
+  if code != 0 {
+    println("prepare 失败：三个程序没构建成功（exit=\{code}）")
+    println("提示：native 编译需要 C 编译器，默认按 FIX_CC=clang 传给 MOON_CC。")
+    println(tail_lines(try! err.text(), 8))
+    return false
+  }
+  true
+}
+
+///|
+async fn run_cases(label : String, selected : Array[Case], expect : String) -> Int {
+  println("\{label} —— 期望 verdict=\{expect}")
+  let mut fails = 0
+  for c in selected {
+    let r = probe(c)
+    let ok = r.verdict == expect && r.alive_before
+    let note = if ok { "PASS" } else { "FAIL" }
+    let detail = match r.verdict {
+      "term_ignored" => "TERM 后仍存活（SIGKILL 收场 exit=\{r.exit}）"
+      "term_ok" => "TERM 后退出 exit=\{r.exit}"
+      _ => "启动后自行退出 exit=\{r.exit}"
+    }
+    println(
+      "  \{pad(c.name, 12)} \{pad(r.verdict, 13)} \{pad(detail, 33)} \{pad(note, 5)} \{c.desc}",
+    )
+    if !ok {
+      fails = fails + 1
+      println(
+        "         alive_before_term=\{r.alive_before} waited_ms=\{r.waited_ms}（期望 \{expect}）",
+      )
+    }
+  }
+  fails
+}
+
+///|
+fn list_cases() -> Unit {
+  println("\{pad("CASE", 13)} \{pad("LANE", 11)} \{pad("EXPECT", 14)} 说明")
+  for c in all_cases() {
+    println("\{pad(c.name, 13)} \{pad(c.lane, 11)} \{pad(c.expect, 14)} \{c.desc}")
+  }
+}
+
+///|
+async fn moon_version() -> String {
+  let (_, out, _) = @process.collect_output(moon_exe(), ["version"])
+  try! out.text()
+}
+
+///|
+async fn diagnose() -> Unit {
+  println("moon      : \{moon_exe()}")
+  println("            \{moon_version()}")
+  println(
+    "探针      : 启动后 \{ready_wait} ms 发 SIGTERM(\{sigterm})，宽限 \{term_grace} ms，之后 SIGKILL(\{sigkill})",
+  )
+  println("用例      :")
+  for c in all_cases() {
+    println("    \{pad(c.name, 12)} \{c.exe}")
+  }
+  println("--- 三个程序的循环形态（关键行）---")
+  for pair in [
+    ("loop", "loop/main.mbt"),
+    ("async_loop", "async_loop/main.mbt"),
+    ("async_tight", "async_tight/main.mbt"),
+  ] {
+    let lines = try! (@fs.read_file(pair.1)).text().split("\n").collect()
+    println("    \{pair.0}:")
+    let mut i = 0
+    while i < lines.length() {
+      let l = lines[i].to_owned().trim()
+      if l.contains("while true") || l.contains("@async.sleep") || l.contains("fn main") {
+        println("        \{i + 1}:\{l}")
+      }
+      i = i + 1
+    }
+  }
+}
+
+///|
+async fn dispatch(cmd : String) -> Int {
+  match cmd {
+    "bug" =>
+      run_cases(
+        "命中问题 lane —— 紧循环收到 TERM 期望仍存活（term_ignored）",
+        lane_cases("bug"),
+        "term_ignored",
+      )
+    "workaround" =>
+      run_cases("绕过 lane —— 每轮回到事件循环，期望 TERM 生效（term_ok）", lane_cases("workaround"), "term_ok")
+    "contrast" =>
+      run_cases("对照 lane —— 非 async 忙等，期望 TERM 生效（term_ok）", lane_cases("contrast"), "term_ok")
+    "fixed" =>
+      run_cases(
+        "修复验收 lane —— 期望紧循环也能被 TERM 停掉（上游修好后转 PASS）",
+        lane_cases("bug"),
+        "term_ok",
+      )
+    "verify" => {
+      let a = run_cases(
+        "命中问题 lane —— 紧循环收到 TERM 期望仍存活（term_ignored）",
+        lane_cases("bug"),
+        "term_ignored",
+      )
+      let b = run_cases(
+        "绕过 lane —— 每轮回到事件循环，期望 TERM 生效（term_ok）",
+        lane_cases("workaround"),
+        "term_ok",
+      )
+      let c = run_cases(
+        "对照 lane —— 非 async 忙等，期望 TERM 生效（term_ok）",
+        lane_cases("contrast"),
+        "term_ok",
+      )
+      if a + b + c == 0 {
+        println("== 三条 lane 全部通过 ==")
+      } else {
+        println("== 有失败：\{a + b + c} 条 ==")
+      }
+      a + b + c
+    }
+    _ => {
+      println("未知子命令：\{cmd}")
+      println("可用：bug | workaround | contrast | fixed | list | diagnose（不带参数 = verify）")
+      2
+    }
+  }
+}
+
+///|
+async fn main {
+  let args = @env.args()
+  let cmd = if args.length() > 1 { args[1] } else { "verify" }
+  if !@fs.exists("_build/logs") {
+    @fs.mkdir("_build/logs", recursive=true)
+  }
+  let fails = match cmd {
+    "list" => {
+      list_cases()
+      0
+    }
+    "diagnose" => {
+      diagnose()
+      0
+    }
+    "bug" | "workaround" | "contrast" | "fixed" | "verify" =>
+      if prepare() { dispatch(cmd) } else { 2 }
+    _ => dispatch(cmd)
+  }
+  c_exit(if fails == 0 { 0 } else { 1 })
+}
