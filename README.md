@@ -48,8 +48,8 @@ async fn main {
 
 | 平台 | moon 版本 | 结果 |
 | --- | --- | --- |
-| 本机 Linux x86-64 | 0.1.20260916（e4f45e4，2026-09-16） | 复现（`make bug` 绿） |
-| GitHub Actions `ubuntu-latest` | 未运行 | 仓库还没推上去，CI 没跑过 |
+| 本机 Linux x86-64 | 0.1.20260916（e4f45e4，2026-09-16，nightly） | 复现（`make bug` 绿） |
+| GitHub Actions `ubuntu-latest` | 0.1.20260915（2e1a46d，2026-09-15，`latest` 频道） | 复现（[run 35218987137](https://github.com/conglinyizhi/moonbug-replay-sigterm-ignored-caused-by-non-yielding-async-loop/actions/runs/35218987137)：三条 lane 全绿） |
 
 ## 2. 快速复现
 
@@ -143,6 +143,11 @@ workaround / contrast 两条 lane 由 PASS 变 FAIL。探针的父进程就是 `
 
 四个 job：`hit-the-bug` / `workaround` / `contrast` / `upstream-fix-status`（`continue-on-error`，用来看上游修没修）。
 
+头一次运行（2026-09-17，[run 35218987137](https://github.com/conglinyizhi/moonbug-replay-sigterm-ignored-caused-by-non-yielding-async-loop/actions/runs/35218987137)）：
+三条 lane 都是 success，`upstream-fix-status` 是 failure 但 workflow 结论仍是 success。
+runner 上装的是 `latest` 频道的 `moon 0.1.20260915 (2e1a46d 2026-09-15)`，本机是 09-16 的 nightly —— 两边结论一致。
+workflow 里的安装步骤没带频道参数，默认就是 `latest`；想跑 nightly 就在 `curl ... | bash` 后面加 `-s -- nightly`。
+
 ### 注意
 
 - `@async.sleep` 的参数是毫秒；探针在启动 2000 ms 后发信号，`async_tight` 在 1000 ms 时进紧循环。
@@ -155,10 +160,14 @@ workaround / contrast 两条 lane 由 PASS 变 FAIL。探针的父进程就是 `
 ### 环境
 
 ```
-moon 0.1.20260916 (e4f45e4 2026-09-16)
+# 本机（本文所有数字的来源）
+moon 0.1.20260916 (e4f45e4 2026-09-16)      # nightly
 moonc v0.10.13+75bd53fc8-nightly (2026-09-15)
 moonbitlang/async 0.22.1
 Linux x86-64（内核 7.2.3-arch1-3），clang 22.1.8
+
+# CI（ubuntu-latest，run 35218987137）
+moon 0.1.20260915 (2e1a46d 2026-09-15)      # latest 频道
 ```
 
 ### 相关上游 issue
