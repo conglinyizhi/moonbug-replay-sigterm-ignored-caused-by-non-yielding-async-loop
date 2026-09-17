@@ -275,15 +275,21 @@ fn list_cases() -> Unit {
 }
 
 ///|
+/// 多行：moon / moonc / moonrun / feature flags —— 报 bug 时这几个版本都要
 async fn moon_version() -> String {
-  let (_, out, _) = @process.collect_output(moon_exe(), ["version"])
+  let (_, out, _) = @process.collect_output(moon_exe(), ["version", "--all"])
   try! out.text()
 }
 
 ///|
 async fn diagnose() -> Unit {
   println("moon      : \{moon_exe()}")
-  println("            \{moon_version()}")
+  println("工具链    :")
+  for line in moon_version().split("\n") {
+    if line.length() > 0 {
+      println("    \{line}")
+    }
+  }
   println(
     "探针      : 启动后 \{ready_wait} ms 发 SIGTERM(\{sigterm})，宽限 \{term_grace} ms，之后 SIGKILL(\{sigkill})",
   )

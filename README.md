@@ -141,12 +141,22 @@ workaround / contrast 两条 lane 由 PASS 变 FAIL。探针的父进程就是 `
 
 ### CI
 
-四个 job：`hit-the-bug` / `workaround` / `contrast` / `upstream-fix-status`（`continue-on-error`，用来看上游修没修）。
+两个 workflow，每个四条 job（`hit-the-bug` / `workaround` / `contrast` / `upstream-fix-status`，
+最后一个 `continue-on-error`，专门用来看上游修没修）：
 
-头一次运行（2026-09-17，[run 35218987137](https://github.com/conglinyizhi/moonbug-replay-sigterm-ignored-caused-by-non-yielding-async-loop/actions/runs/35218987137)）：
-三条 lane 都是 success，`upstream-fix-status` 是 failure 但 workflow 结论仍是 success。
-runner 上装的是 `latest` 频道的 `moon 0.1.20260915 (2e1a46d 2026-09-15)`，本机是 09-16 的 nightly —— 两边结论一致。
-workflow 里的安装步骤没带频道参数，默认就是 `latest`；想跑 nightly 就在 `curl ... | bash` 后面加 `-s -- nightly`。
+| workflow | 工具链频道 | 触发 |
+| --- | --- | --- |
+| `repro.yml` | `latest`（安装脚本不带参数时的默认频道） | push / PR / 手动 |
+| `nightly.yml` | `nightly` | push + 每天 04:00 UTC 定时 + 手动 |
+
+两个频道各跑一遍，是为了给上游两条数据：这个问题不是某个频道独有的。nightly 每天在变，
+定时跑也能当「上游是否已修」的探针。每个 job 开头都会 `make diagnose`，日志里有完整的
+`moon / moonc / moonrun` 版本，报 bug 时直接引。
+
+`latest` 那轮（2026-09-17，[run 35218987137](https://github.com/conglinyizhi/moonbug-replay-sigterm-ignored-caused-by-non-yielding-async-loop/actions/runs/35218987137)）：
+三条 lane 全绿，`upstream-fix-status` 是 failure 但 workflow 结论仍是 success；
+runner 上装到 `moon 0.1.20260915 (2e1a46d 2026-09-15)`，本机是 09-16 的 nightly —— 两边结论一致。
+（后续一次 push 顺手把 `checkout` 从 v4 升到 v5，消掉了日志里的 Node 20 弃用提示。）
 
 ### 注意
 

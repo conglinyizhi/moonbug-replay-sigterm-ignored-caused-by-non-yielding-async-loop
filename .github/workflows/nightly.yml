@@ -1,0 +1,64 @@
+name: nightly channel
+
+# 与 repro.yml 同样的 lane，只是工具链换成 nightly 频道。
+# repro.yml 装的是安装脚本不带参数时的默认频道（latest）；
+# 两个频道都跑一遍，是为了给上游两条数据：这个问题不是某个频道独有的。
+# nightly 每天在变，所以这里额外挂了一个每日定时跑，看它会不会自己变好或变坏。
+
+on:
+  push:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+jobs:
+  hit-the-bug:
+    name: 命中问题 lane（nightly）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: 安装 MoonBit 工具链（nightly 频道）
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash -s -- nightly
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: 工具链版本与循环形态
+        run: make diagnose
+      - name: 跑命中问题 lane
+        run: make bug
+
+  workaround:
+    name: 绕过 lane（nightly）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: 安装 MoonBit 工具链（nightly 频道）
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash -s -- nightly
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: 跑绕过 lane
+        run: make workaround
+
+  contrast:
+    name: 对照 lane（nightly）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: 安装 MoonBit 工具链（nightly 频道）
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash -s -- nightly
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: 跑对照 lane
+        run: make contrast
+
+  upstream-fix-status:
+    name: 上游是否已修（nightly，允许失败）
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - name: 安装 MoonBit 工具链（nightly 频道）
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash -s -- nightly
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - name: 跑修复验收 lane
+        run: make fixed
