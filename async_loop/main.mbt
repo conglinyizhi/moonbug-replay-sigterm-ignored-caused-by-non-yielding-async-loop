@@ -2,6 +2,7 @@
 //
 // 收到 SIGTERM 正常退出（exit 143）。
 // @async.sleep 的参数单位是毫秒。
+
 ///|
 async fn main {
   println("async_loop: await every iteration")

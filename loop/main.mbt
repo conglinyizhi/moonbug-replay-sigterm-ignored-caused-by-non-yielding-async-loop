@@ -2,6 +2,7 @@
 //
 // 收到 SIGTERM 正常退出（exit 143）。说明「忙等」本身不是问题，
 // 问题出在 async 运行时起来之后、任务长时间不 yield。
+
 ///|
 fn main {
   println("loop: busy loop, non-async")

@@ -6,6 +6,7 @@
 // 收到 SIGTERM 不退出，只能 SIGKILL。
 // @async.sleep 的参数单位是毫秒：这里等 1 秒再进紧循环，
 // 探针在启动 2 秒后发信号，那时循环已经跑起来了。
+
 ///|
 async fn main {
   println("async_tight: tight loop after one await")
