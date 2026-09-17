@@ -189,13 +189,15 @@ moon 0.1.20260916 (e4f45e4 2026-09-16)      # nightly 频道（run 35219983330�
 
 ### 相关上游 issue
 
-在 [moonbitlang/async](https://github.com/moonbitlang/async)（native 事件循环与信号处理在这里）里搜：
-`SIGTERM` **2 命中**，分别是 #22、#232，都已关闭且是 process 取消 API 的事；`signal` **50 命中**，
+已投 **[moonbitlang/async#612](https://github.com/moonbitlang/async/issues/612)**
+（`SIGTERM is silently ignored when a task never suspends`，2026-09-17 开，尚无维护者回复）。
+目标仓库就是 [moonbitlang/async](https://github.com/moonbitlang/async) —— `async fn main` 的运行时、
+以及接管信号的那段代码（`src/internal/event_loop/signal.{c,mbt}`）都在这里。
+
+投之前搜过：`SIGTERM` **2 命中**，分别是 #22、#232，都已关闭且是 process 取消 API 的事；`signal` **50 命中**，
 绝大多数是 wasm / cancellation 方向，开着的 #442 是 native runtime 的 followups 追踪，列的是 Windows `sync` 之类，都不覆盖这条。
 
 `moonbitlang/moon` 里 #1341 / #1342 / #1344 / #1351 讨论的是「moon 把信号传给它启动的子进程」，属于另一层，不冲突。
-
-目标仓库就是 **[moonbitlang/async](https://github.com/moonbitlang/async)**（`async fn main` 的运行时来自这里）。
 
 ### 姊妹仓库
 
