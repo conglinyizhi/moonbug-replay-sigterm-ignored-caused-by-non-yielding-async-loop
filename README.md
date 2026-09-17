@@ -28,7 +28,19 @@ async fn main {
 | `async_tight/` | `@async.sleep(1000)` 一次后紧循环 | **无效**，进程仍在跑 | 只有 `SIGKILL` 收得掉，137 |
 
 也就是说：非 async 正常、会回到事件循环的 async 正常，**只有「async 运行时已启动、但任务长时间不 yield」时不响应 TERM**。
-看起来是信号经由事件循环投递，紧循环永远不给它机会 —— 这一句是推测，本仓库没有去读 runtime 源码验证。
+
+### 机制（在 async 源码里能对上）
+
+`moonbitlang/async@0.22.1` 里信号不走进程默认处置，而是被接管后投给事件循环：
+
+- `src/internal/event_loop/signal.c`：`pthread_sigmask(SIG_SETMASK, 0, &signals_to_block)` 先把取消信号屏蔽掉，
+  另起一个 `sigwait_thread_worker` 线程用 `sigwait(&wait_set, &sig)` 收信号，收到后
+  `moonbitlang_async_notify_event_loop(sig | (1 << 31))` 把它当通知投给事件循环
+- `src/internal/event_loop/signal.mbt:89`：`setup_signal_handler_unix` 调 `set_global_cancellation_signals(all_signals)`
+  并 `start_signal_handler_ffi()`；调用点在 `event_loop.mbt:142`，也就是事件循环起来的时候
+
+所以事件循环不跑 → 通知没人处理 → `TERM` 看起来被忽略。紧循环正好永远不回到事件循环。
+（依赖源码在仓库旁的 `.mooncakes/moonbitlang/async/`，也可以 `moon fetch moonbitlang/async@0.22.1` 单独拉下来看。）
 
 影响面：`timeout(1)`、CI 的超时兜底、进程管理器（systemd / supervisor / 容器 `stop`）都停不掉这类进程，只剩 `SIGKILL`。
 
@@ -56,8 +68,8 @@ make bug
 期望输出（命中问题即通过）：
 
 ```
-命中问题 lane —— 紧循环收到 TERM 期望仍存活（term_ignored）
-  async_tight  term_ignored  TERM 后仍存活（SIGKILL 收场 exit=137）  PASS
+命中问题 lane —— 紧循环收到 TERM 期望仍存活（term_ignored） —— 期望 verdict=term_ignored
+  async_tight  term_ignored  TERM 后仍存活（SIGKILL 收场 exit=137）    PASS  async 紧循环（await 一次后不再 yield）—— 复现
 ```
 
 不想用 Makefile：
@@ -113,8 +125,9 @@ make deps        # 同步 registry 索引（首次运行需要，各 lane 会自
 
 判活为什么不用 `kill(pid, 0)`：子进程被信号打死后、被收尸之前是僵尸，僵尸也是「kill 成功」，
 会把「已经退出」误判成「TERM 无效」。`waitpid` 非阻塞收尸一次就能同时给出「还在跑」和「退出码」。
-（本机实测：换成 `kill -0` 判活时三个 verdict 不变，但「已经退出」要等 shell 处理一次 SIGCHLD 才看得见，
-判定被推迟一个轮询周期。）
+（本机实测：把 `reap` 换成 `kill(pid, 0)` 判活，`loop` 与 `async_loop` 会被僵尸误判成 `term_ignored`，
+workaround / contrast 两条 lane 由 PASS 变 FAIL。探针的父进程就是 `cases.mbtx` 自己，宽限窗口里没人收尸，
+`ps` 全程显示 `Z <defunct>` 而 `kill(pid,0)` 恒为 0。）
 
 ### 用例
 
@@ -133,8 +146,11 @@ make deps        # 同步 registry 索引（首次运行需要，各 lane 会自
 ### 注意
 
 - `@async.sleep` 的参数是毫秒；探针在启动 2000 ms 后发信号，`async_tight` 在 1000 ms 时进紧循环。
+  本机扫过翻转点：`ready_wait` 要 1050 ms 以上才是「TERM 被忽略」，1000 ms 时信号落在 sleep 里。
+  2000 ms 留了约 1 s 余量；机器慢到把这个余量吃掉，`bug` lane 会假 FAIL、`fixed` lane 会假 PASS。
 - native 编译需要一个 C 驱动：Makefile 默认按 `FIX_CC=clang` 传给 `MOON_CC`，可用 `make FIX_CC=gcc ...` 覆盖。
-- `loop.exe` 与 `async_tight.exe` 不会自己退出；手工 `&` 跑测试记得收尾。
+  `FIX_CC` 给绝对路径时 moon 会去同目录找归档器（`ar`），那个目录里没有 `ar` 就会构建失败。
+- 三个程序都不会自己退出（`loop` / `async_loop` / `async_tight`），手工 `&` 跑测试记得收尾。
 
 ### 环境
 
